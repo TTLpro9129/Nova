@@ -9,7 +9,9 @@ from werkzeug.utils import secure_filename
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.getenv("GMAIL_APP_PASSWORD", "nova_final_fix_v14")
+# Autorise les fichiers jusqu'à 500 Mo
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
+app.secret_key = os.getenv("GMAIL_APP_PASSWORD", "nova_premium_final_v21")
 
 class UserCtx(dict): __getattr__ = dict.get
 
@@ -19,10 +21,9 @@ class FlaskSessionStorage(SyncSupportedStorage):
     def set_item(self, key: str, value: str) -> None: self.storage[key] = value
     def remove_item(self, key: str) -> None: self.storage.pop(key, None)
 
-# CONNEXION
 try:
     url = "https://grbhemxpqrqialezsywj.supabase.co/"
-    key = os.getenv("SUPABASE_KEY", "").split()[0].strip()
+    key = os.getenv("SUPABASE_KEY", "").strip()
     supabase: Client = create_client(url, key, options=ClientOptions(storage=FlaskSessionStorage()))
     print("✅ HUB NOVA CONNECTÉ")
 except Exception as e: print(f"❌ ERREUR INIT : {e}")
@@ -36,8 +37,6 @@ def get_user_context():
     except: pass
     return None
 
-# --- ROUTES ---
-
 @app.route('/')
 def index():
     user = get_user_context()
@@ -45,7 +44,7 @@ def index():
     try:
         items = supabase.table("apps").select("*").order("created_at", desc=True).execute().data
         if user:
-            for i in items: i['can_delete'] = (user.is_admin or i.get('owner_id') == user.id)
+            for i in items: i['can_delete'] = (user.is_admin or str(i.get('owner_id')) == str(user.id))
             if user.is_admin:
                 users_list = supabase.table("profiles").select("*").execute().data
     except: pass
@@ -55,16 +54,32 @@ def index():
 def upload():
     user = get_user_context()
     file = request.files.get('file')
-    if not user or not file: return jsonify({"error": "Auth"}), 400
+    if not user or not file: return jsonify({"error": "Auth/File missing"}), 400
+    
     clean_filename = secure_filename(file.filename)
     display_name = file.filename.rsplit('.', 1)[0]
     ext = clean_filename.split('.')[-1].lower()
     path = f"public/{user.id}/{clean_filename}"
+    
     try:
         supabase.storage.from_("files").upload(path, file.read(), {"upsert": "true"})
-        cfg = {"exe": ("PC", "fa-brands fa-windows", "text-cyan-400"), "apk": ("ANDROID", "fa-brands fa-android", "text-green-400"), "ipa": ("iOS", "fa-brands fa-apple", "text-slate-300")}
+        
+        # Configuration des types incluant ZIP, RAR, 7Z
+        cfg = {
+            "exe": ("PC", "fa-brands fa-windows", "text-cyan-400"),
+            "apk": ("ANDROID", "fa-brands fa-android", "text-green-400"),
+            "ipa": ("iOS", "fa-brands fa-apple", "text-slate-300"),
+            "zip": ("ARCHIVE", "fa-solid fa-file-zipper", "text-yellow-500"),
+            "rar": ("ARCHIVE", "fa-solid fa-file-zipper", "text-yellow-600"),
+            "7z": ("ARCHIVE", "fa-solid fa-file-zipper", "text-orange-500")
+        }
         label, icon, color = cfg.get(ext, (ext.upper(), "fa-solid fa-box-open", "text-blue-400"))
-        supabase.table("apps").upsert({"name": display_name, "owner": user.username, "owner_id": user.id, "file": clean_filename, "storage_path": path, "type": label, "color": color, "icon_class": icon, "version": "1.0.0"}, on_conflict="file").execute()
+        
+        supabase.table("apps").upsert({
+            "name": display_name, "owner": user.username, "owner_id": user.id, 
+            "file": clean_filename, "storage_path": path, "type": label, 
+            "color": color, "icon_class": icon, "version": "1.0.0"
+        }, on_conflict="file").execute()
         return jsonify({"success": True})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
@@ -107,8 +122,9 @@ def logout():
 def download(filename):
     try:
         res = supabase.table("apps").select("storage_path").eq("file", filename).single().execute()
-        return redirect(supabase.storage.from_("files").create_signed_url(res.data['storage_path'], 3600)['signedURL'])
-    except: return "Error 404", 404
+        signed = supabase.storage.from_("files").create_signed_url(res.data['storage_path'], 3600)
+        return redirect(signed['signedURL'])
+    except: return "404", 404
 
 @app.route('/delete/<path:filename>', methods=['POST'])
 def delete_item(filename):
@@ -117,7 +133,8 @@ def delete_item(filename):
 
 @app.route('/change_username', methods=['POST'])
 def change_username():
-    user = get_user_context(); new_u = request.form.get('new_username')
+    user = get_user_context()
+    new_u = request.form.get('new_username')
     if user and new_u: supabase.table("profiles").update({"username": new_u}).eq("id", user.id).execute()
     return redirect('/')
 
