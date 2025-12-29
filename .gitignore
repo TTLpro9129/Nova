@@ -1,0 +1,7 @@
+﻿.env
+.venv/
+apks/
+uploads/
+__pycache__/
+*.exe
+*.apk
