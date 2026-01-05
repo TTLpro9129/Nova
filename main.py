@@ -11,7 +11,7 @@ from werkzeug.utils import secure_filename
 load_dotenv()
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024 # 500Mo max
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.secret_key = os.getenv("GMAIL_APP_PASSWORD", "nova_secret_key_123")
 
 # CONFIGURATION
@@ -61,36 +61,36 @@ def upload():
     user = get_user_context()
     file = request.files.get('file')
     if not user or not file: return jsonify({"error": "Auth/File missing"}), 400
-    
     clean_filename = secure_filename(file.filename)
     display_name = file.filename.rsplit('.', 1)[0]
     ext = clean_filename.split('.')[-1].lower()
-    
     temp_path = os.path.join("/tmp", clean_filename)
     if not os.path.exists("/tmp"): os.makedirs("/tmp")
     file.save(temp_path)
-    
     try:
-        # Upload GITHUB (Stockage lourd)
         tag = f"v-{uuid.uuid4().hex[:8]}"
         release = repo.create_git_release(tag=tag, name=display_name, message=f"By {user.username}")
         asset = release.upload_asset(path=temp_path, label=clean_filename, content_type='application/octet-stream')
-        
-        # Enregistrement SUPABASE
         cfg = {"exe": ("PC", "fa-brands fa-windows", "text-cyan-400"), "apk": ("ANDROID", "fa-brands fa-android", "text-green-400"), "zip": ("ZIP", "fa-solid fa-file-zipper", "text-yellow-500")}
         label, icon, color = cfg.get(ext, ("FILE", "fa-solid fa-box", "text-blue-400"))
-        
         supabase.table("apps").upsert({
             "name": display_name, "owner": user.username, "owner_id": user.id, 
             "file": clean_filename, "storage_path": asset.browser_download_url,
             "type": label, "color": color, "icon_class": icon
         }, on_conflict="file").execute()
-
         os.remove(temp_path)
         return jsonify({"success": True})
     except Exception as e:
         if os.path.exists(temp_path): os.remove(temp_path)
         return jsonify({"error": str(e)}), 500
+
+@app.route('/change_username', methods=['POST'])
+def change_username():
+    user = get_user_context()
+    new_u = request.form.get('new_username')
+    if user and new_u:
+        supabase.table("profiles").update({"username": new_u}).eq("id", user.id).execute()
+    return redirect('/')
 
 @app.route('/update_icon/<path:filename>', methods=['POST'])
 def update_icon(filename):
@@ -100,11 +100,8 @@ def update_icon(filename):
     try:
         ext = image.filename.split('.')[-1].lower()
         path = f"logos/{user.id}/{filename}.{ext}"
-        
-        # Upload Supabase Storage (Pour les petites icônes)
         image_data = image.read()
         supabase.storage.from_("files").upload(path, image_data, {"upsert": "true", "content-type": f"image/{ext}"})
-        
         icon_url = f"{SUPABASE_URL}/storage/v1/object/public/files/{path}"
         supabase.table("apps").update({"preview_icon": icon_url}).eq("file", filename).execute()
         return jsonify({"success": True})
@@ -139,6 +136,13 @@ def logout():
 @app.route('/delete/<path:filename>', methods=['POST'])
 def delete_item(filename):
     if get_user_context(): supabase.table("apps").delete().eq("file", filename).execute()
+    return redirect('/')
+
+@app.route('/admin/delete_user', methods=['POST'])
+def admin_delete():
+    user = get_user_context()
+    if user and user.is_admin:
+        supabase.table("profiles").delete().eq("username", request.form.get('target')).execute()
     return redirect('/')
 
 if __name__ == '__main__':
